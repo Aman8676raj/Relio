@@ -1,0 +1,3 @@
+# Seed data — vendor CSVs (do not commit)
+scripts/seed/data/*.csv
+scripts/seed/data/*.json

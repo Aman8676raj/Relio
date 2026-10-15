@@ -1,0 +1,84 @@
+{
+  "theme": "Light",
+  "archetype": "1 (Organic & Earthy) - Modified for Neo-Claymorphism",
+  "design_concept": "Neo-Claymorphism CRM for Founders - Tactile, warm, and highly functional without the coldness of typical B2B SaaS.",
+  "typography": {
+    "heading_font": "Manrope",
+    "body_font": "Work Sans",
+    "scale": {
+      "h1": "text-4xl sm:text-5xl tracking-tight font-extrabold text-[#2A231F]",
+      "h2": "text-2xl sm:text-3xl tracking-tight font-bold text-[#2A231F]",
+      "h3": "text-xl sm:text-2xl font-semibold text-[#2A231F]",
+      "body": "text-base font-normal text-[#2A231F]/90",
+      "caption": "text-sm font-medium text-[#70655B]",
+      "overline": "text-xs uppercase tracking-[0.2em] font-bold text-[#70655B]"
+    }
+  },
+  "colors": {
+    "background": "#F5F3EF",
+    "surface": "#FCFAF8",
+    "primary": "#D35C3E",
+    "primary_hover": "#BA4D31",
+    "accent": "#E09A36",
+    "text_main": "#2A231F",
+    "text_muted": "#70655B",
+    "border": "rgba(42,35,31,0.08)",
+    "status": {
+      "hot": {
+        "bg": "#FCE8E3",
+        "text": "#B33A27"
+      },
+      "warm": {
+        "bg": "#FDF3DF",
+        "text": "#A86B14"
+      },
+      "cold": {
+        "bg": "#E8F0F3",
+        "text": "#2C5B6B"
+      }
+    }
+  },
+  "spacing_and_layout": {
+    "system": "8px base scale",
+    "card_padding": "p-6 sm:p-8",
+    "gap_standard": "gap-6 sm:gap-8",
+    "border_radius": "rounded-3xl"
+  },
+  "surfaces_and_shadows": {
+    "clay_card": "bg-[#FCFAF8] rounded-3xl shadow-[8px_8px_20px_rgba(42,35,31,0.04),-8px_-8px_20px_rgba(255,255,255,1)] border border-white/60",
+    "clay_button": "bg-[#D35C3E] text-white rounded-full shadow-[inset_0_-4px_8px_rgba(0,0,0,0.15),0_6px_16px_rgba(211,92,62,0.25)] hover:-translate-y-0.5 transition-transform font-bold px-6 py-2.5",
+    "clay_input": "bg-[#F5F3EF] rounded-2xl shadow-[inset_4px_4px_8px_rgba(42,35,31,0.04),inset_-4px_-4px_8px_rgba(255,255,255,0.8)] border-none focus:ring-2 focus:ring-[#D35C3E]/50 px-4 py-3 text-[#2A231F] placeholder:text-[#70655B]/60"
+  },
+  "components": {
+    "sidebar": "Separated floating panel: m-4 h-[calc(100vh-2rem)] w-64 clay_card flex flex-col justify-between fixed left-0 top-0",
+    "topbar": "Floating header inside the main content area, sticky top-4 z-40 mb-8 clay_card px-6 py-4 flex items-center justify-between",
+    "avatar": "Rounded-full, thick white border for pop (border-2 border-white shadow-sm object-cover)",
+    "network_graph": "Render inside a clay_card. Use D3.js force-directed graph (via react-force-graph-2d or d3 directly). Nodes are circles with investor images or initials. Edges are thin curved lines (stroke: #E09A36). Transparent background for SVG.",
+    "kanban_board": "Columns have a subtle inset shadow background (bg-[#F5F3EF] rounded-3xl p-4 shadow-inner). Cards inside are standard `clay_card` with `cursor-grab`. On drag: scale-105 shadow-xl.",
+    "empty_states": "Use Lucide icons (size 48, strokeWidth 1.5, text-[#70655B]) centered in a clay_card with dashed borders instead of solid shadows, plus a friendly caption.",
+    "draft_split_view": "Left sidebar for drafts (bg-transparent, list items have hover:bg-white/50 rounded-xl). Right side is the composer (clay_card with rich text input area).",
+    "loading_skeletons": "Use bg-[#EBE7E0] animate-pulse rounded-xl for text blocks and rounded-full for avatars."
+  },
+  "media": {
+    "auth_background": "https://images.unsplash.com/photo-1768152858453-537bcdb20e65?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxOTB8MHwxfHNlYXJjaHwxfHwzZCUyMGFic3RyYWN0JTIwY2xheSUyMHNoYXBlcyUyMHdhcm0lMjB0ZXJyYWNvdHRhJTIwYmFja2dyb3VuZHxlbnwwfHx8fDE3NzUxNjMxNzF8MA&ixlib=rb-4.1.0&q=85",
+    "investor_avatars": [
+      "https://images.unsplash.com/photo-1609371497456-3a55a205d5eb?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1NzZ8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBidXNpbmVzcyUyMGhlYWRzaG90cyUyMGRpdmVyc2V8ZW58MHx8fHwxNzc1MTYzMTU4fDA&ixlib=rb-4.1.0&q=85",
+      "https://images.unsplash.com/photo-1609436132311-e4b0c9370469?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1NzZ8MHwxfHNlYXJjaHwyfHxwcm9mZXNzaW9uYWwlMjBidXNpbmVzcyUyMGhlYWRzaG90cyUyMGRpdmVyc2V8ZW58MHx8fHwxNzc1MTYzMTU4fDA&ixlib=rb-4.1.0&q=85",
+      "https://images.unsplash.com/photo-1573496130141-209d200cebd8?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1NzZ8MHwxfHNlYXJjaHwzfHxwcm9mZXNzaW9uYWwlMjBidXNpbmVzcyUyMGhlYWRzaG90cyUyMGRpdmVyc2V8ZW58MHx8fHwxNzc1MTYzMTU4fDA&ixlib=rb-4.1.0&q=85",
+      "https://images.unsplash.com/photo-1621052733662-93f8bc267792?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1NzZ8MHwxfHNlYXJjaHw0fHxwcm9mZXNzaW9uYWwlMjBidXNpbmVzcyUyMGhlYWRzaG90cyUyMGRpdmVyc2V8ZW58MHx8fHwxNzc1MTYzMTU4fDA&ixlib=rb-4.1.0&q=85",
+      "https://images.pexels.com/photos/8124232/pexels-photo-8124232.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940"
+    ],
+    "logo_mark": "Use Lucide-React 'Sparkles' or 'Aperture' icon in Terracotta (#D35C3E) surrounded by a soft clay rounded square for the Relio brand mark."
+  },
+  "instructions_to_main_agent": [
+    "Use standard HTML divs with the custom Tailwind classes provided in `surfaces_and_shadows` instead of generic Shadcn cards to ensure the Claymorphism look.",
+    "Implement routing for all requested views: Dashboard, Contacts, Detail Page, Kanban, Graph, Drafts, Settings, Auth.",
+    "For the Network Graph, use D3.js force simulation on an SVG or Canvas. Keep it interactive (zoom/pan, hover tooltips).",
+    "Install `@dnd-kit/core` or `@hello-pangea/dnd` for the Pipeline Kanban Board drag-and-drop feature.",
+    "Tables should avoid harsh vertical borders. Use generous padding (py-4) and subtle horizontal dividers (border-b border-black/5).",
+    "All interactive elements MUST have `data-testid` attributes (e.g., `data-testid=\"login-button\"`).",
+    "Never use pure black or default Tailwind blues/grays. Stick strictly to the warm palette provided in the colors object.",
+    "The Auth page should be a split screen: left side is the `auth_background` image with an overlay, right side is the login form centered inside a `clay_card`.",
+    "Include hover states for all buttons and interactive table rows. Button hover should use `primary_hover` color and slightly elevate."
+  ]
+}

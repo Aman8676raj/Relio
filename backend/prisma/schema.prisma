@@ -1,0 +1,1097 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── ENUMS ──────────────────────────────────────────────────────────────────
+
+enum WarmthTier {
+  hot
+  warm
+  cold
+  frozen
+}
+
+enum PipelineStage {
+  none
+  intro
+  meeting
+  dd
+  term_sheet
+  closed_won
+  closed_lost
+  paused
+}
+
+enum DraftFeedback {
+  positive
+  negative
+}
+
+enum MessageDirection {
+  inbound
+  outbound
+}
+
+enum ParticipantRole {
+  from
+  to
+  cc
+  bcc
+}
+
+// ─── BILLING & SUBSCRIPTION MODELS ─────────────────────────────────────────
+
+model Plan {
+  id          String  @id @default(uuid()) @db.Uuid
+  name        String  @unique @db.VarChar(50) // starter, growth, scale, enterprise
+  displayName String  @map("display_name") @db.VarChar(100)
+  description String? @db.Text
+  
+  // Pricing
+  priceMonthly    Int     @map("price_monthly") // cents
+  priceYearly     Int?    @map("price_yearly") // cents (null = no yearly option)
+  stripePriceId   String? @map("stripe_price_id") @db.VarChar(255)
+  stripeProductId String? @map("stripe_product_id") @db.VarChar(255)
+  
+  // Limits
+  contactLimit        Int?    @map("contact_limit") // null = unlimited
+  teamSeats          Int     @default(1) @map("team_seats")
+  creditsPerMonth    Int     @default(0) @map("credits_per_month")
+  creditPriceOverage Float   @default(0.50) @map("credit_price_overage") // price per extra credit
+  
+  // Plan metadata
+  isActive        Boolean @default(true) @map("is_active")
+  sortOrder       Int     @default(0) @map("sort_order")
+  isPopular       Boolean @default(false) @map("is_popular")
+  isMostAdvanced  Boolean @default(false) @map("is_most_advanced")
+  
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  
+  // Relations
+  features      PlanFeature[]
+  subscriptions Subscription[]
+  
+  @@map("plans")
+}
+
+model Feature {
+  id          String @id @default(uuid()) @db.Uuid
+  key         String @unique @db.VarChar(100) // ai_investor_matching, team_collaboration
+  name        String @db.VarChar(255)
+  description String @db.Text
+  category    String @db.VarChar(50) // core, ai, collaboration, analytics, enterprise
+  
+  // Feature limits (nullable = unlimited/boolean feature)
+  usageLimit     Int?    @map("usage_limit") // monthly limit for this feature
+  creditCost     Int     @default(0) @map("credit_cost") // credits consumed per use
+  isBoolean      Boolean @default(false) @map("is_boolean") // true/false feature vs usage-based
+  
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  
+  // Relations
+  planFeatures PlanFeature[]
+  usageRecords FeatureUsage[]
+  
+  @@map("features")
+}
+
+model PlanFeature {
+  id       String @id @default(uuid()) @db.Uuid
+  planId   String @map("plan_id") @db.Uuid
+  featureId String @map("feature_id") @db.Uuid
+  
+  // Override feature limits for this plan
+  customLimit    Int?     @map("custom_limit") // override Feature.usageLimit
+  customCreditCost Int?   @map("custom_credit_cost") // override Feature.creditCost
+  isIncluded     Boolean  @default(true) @map("is_included")
+  
+  plan    Plan    @relation(fields: [planId], references: [id], onDelete: Cascade)
+  feature Feature @relation(fields: [featureId], references: [id], onDelete: Cascade)
+  
+  @@unique([planId, featureId])
+  @@map("plan_features")
+}
+
+model Subscription {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @unique @map("user_id") @db.Uuid
+  planId String @map("plan_id") @db.Uuid
+  
+  // Stripe integration
+  stripeSubscriptionId String? @unique @map("stripe_subscription_id") @db.VarChar(255)
+  stripeCustomerId     String? @map("stripe_customer_id") @db.VarChar(255)
+  
+  // Subscription details
+  status           String    @db.VarChar(50) // active, canceled, past_due, incomplete
+  billingCycle     String    @default("monthly") @map("billing_cycle") @db.VarChar(20) // monthly, yearly
+  currentPeriodEnd DateTime? @map("current_period_end") @db.Timestamptz
+  cancelAtPeriodEnd Boolean  @default(false) @map("cancel_at_period_end")
+  
+  // Trial
+  trialEnd DateTime? @map("trial_end") @db.Timestamptz
+  
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  canceledAt DateTime? @map("canceled_at") @db.Timestamptz
+  
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan Plan @relation(fields: [planId], references: [id])
+  
+  @@map("subscriptions")
+}
+
+// ─── CREDIT SYSTEM ─────────────────────────────────────────────────────
+
+model CreditBalance {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @unique @map("user_id") @db.Uuid
+  
+  balance           Int       @default(0) // current available credits
+  lifetimeEarned    Int       @default(0) @map("lifetime_earned")
+  lifetimeSpent     Int       @default(0) @map("lifetime_spent")
+  lastResetAt       DateTime? @map("last_reset_at") @db.Timestamptz // monthly plan credit reset
+  
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@map("credit_balances")
+}
+
+model CreditTransaction {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+  
+  type        String @db.VarChar(50) // earned_monthly, purchased, spent, expired, refunded
+  amount      Int // positive for earned/purchased, negative for spent
+  balance     Int // balance after this transaction
+  description String @db.Text
+  
+  // Reference data
+  featureKey      String? @map("feature_key") @db.VarChar(100) // what feature consumed credits
+  stripePaymentId String? @map("stripe_payment_id") @db.VarChar(255) // for purchased credits
+  expiresAt       DateTime? @map("expires_at") @db.Timestamptz // for expiring credits
+  
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId, createdAt])
+  @@map("credit_transactions")
+}
+
+// ─── FEATURE USAGE TRACKING ──────────────────────────────────────────────
+
+model FeatureUsage {
+  id        String @id @default(uuid()) @db.Uuid
+  userId    String @map("user_id") @db.Uuid
+  featureId String @map("feature_id") @db.Uuid
+  
+  usageMonth    Int @map("usage_month") // YYYYMM format
+  usageCount    Int @default(0) @map("usage_count")
+  creditsSpent  Int @default(0) @map("credits_spent")
+  
+  // Metadata for specific features
+  metadata Json @default("{}") @db.JsonB // feature-specific tracking data
+  
+  lastUsedAt DateTime @map("last_used_at") @db.Timestamptz
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  feature Feature @relation(fields: [featureId], references: [id], onDelete: Cascade)
+  
+  @@unique([userId, featureId, usageMonth])
+  @@index([userId, usageMonth])
+  @@map("feature_usage")
+}
+
+// ─── ONBOARDING SYSTEM ─────────────────────────────────────────────────
+
+model OnboardingProgress {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @unique @map("user_id") @db.Uuid
+  
+  isCompleted      Boolean @default(false) @map("is_completed")
+  currentStep      Int     @default(1) @map("current_step") // 1-5
+  completedSteps   Json    @default("[]") @map("completed_steps") @db.JsonB // [1,2,3]
+  
+  // Step completion data
+  companyProfileCompleted Boolean   @default(false) @map("company_profile_completed")
+  investorMatchingViewed  Boolean   @default(false) @map("investor_matching_viewed")
+  contactsImported        Boolean   @default(false) @map("contacts_imported")
+  firstActionTaken        Boolean   @default(false) @map("first_action_taken")
+  
+  // Onboarding analytics
+  timeToComplete   Int?      @map("time_to_complete") // seconds
+  stepsSkipped     Json      @default("[]") @map("steps_skipped") @db.JsonB
+  dropoffStep      Int?      @map("dropoff_step") // where they abandoned
+  
+  startedAt   DateTime  @default(now()) @map("started_at") @db.Timestamptz
+  completedAt DateTime? @map("completed_at") @db.Timestamptz
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@map("onboarding_progress")
+}
+
+// ─── MODELS ─────────────────────────────────────────────────────────────────
+
+model User {
+  id           String  @id @default(uuid()) @db.Uuid
+  email        String  @unique @db.VarChar(255)
+  name         String? @db.VarChar(255)
+  passwordHash String? @map("password_hash") @db.Text
+
+  // OAuth tokens — encrypted at rest via AES-256-GCM
+  googleAccessToken  String?   @map("google_access_token") @db.Text
+  googleRefreshToken String?   @map("google_refresh_token") @db.Text
+  tokenExpiry        DateTime? @map("token_expiry") @db.Timestamptz
+  
+  // Stripe integration
+  stripeCustomerId   String?   @map("stripe_customer_id") @db.VarChar(255)
+
+  timezone String @default("UTC") @db.VarChar(50)
+
+  // User preferences (notifications, AI config, integrations)
+  preferences Json @default("{}") @db.JsonB
+
+  // Sync state
+  lastSyncAt DateTime? @map("last_sync_at") @db.Timestamptz
+  syncCursor String?   @map("sync_cursor") @db.VarChar(255)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  contacts            Contact[]
+  threads             EmailThread[]
+  drafts              Draft[]
+  digestLogs          DigestLog[]
+  messages            EmailMessage[]
+  messageParticipants EmailMessageParticipant[]
+  warmthSnapshots     ContactWarmthSnapshot[]
+  contactBriefings    ContactBriefing[]
+  pipelineEvents      PipelineEvent[]
+  introPaths          IntroPath[]
+  startupProfile      StartupProfile?
+  discoveryScores     DiscoveryScore[]
+  sequences           Sequence[]
+  sequenceEnrollments SequenceEnrollment[]
+  forecastSnapshots   ForecastSnapshot[]
+  sentimentSnapshots  SentimentSnapshot[]
+  sentimentAlerts     SentimentAlert[]
+  meetingBriefs       MeetingBrief[]
+  diagnosticsReports  DiagnosticsReport[]
+  pitchDecks          PitchDeck[]
+  founderProfile      FounderProfile?
+  featureAnalyses     FeatureAnalysis[]
+  
+  // New billing and onboarding relations
+  subscription       Subscription?
+  creditBalance      CreditBalance?
+  creditTransactions CreditTransaction[]
+  featureUsage       FeatureUsage[]
+  onboardingProgress OnboardingProgress?
+
+  @@map("users")
+}
+
+model Contact {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  email         String  @db.VarChar(255)
+  name          String? @db.VarChar(255)
+  company       String? @db.VarChar(255)
+  isManual      Boolean @default(false) @map("is_manual")
+  contactType    String  @default("investor") @map("contact_type") @db.VarChar(50) // investor | advisor | partner | other
+  crunchbaseUrl  String? @map("crunchbase_url") @db.Text
+  portfolioFocus Json?   @map("portfolio_focus") @db.JsonB // string[] — populated once by InvestorAlignmentService
+
+  // Interaction stats — recomputed on every sync
+  firstContactedAt     DateTime? @map("first_contacted_at") @db.Timestamptz
+  lastContactedAt      DateTime? @map("last_contacted_at") @db.Timestamptz
+  totalEmails          Int       @default(0) @map("total_emails")
+  inboundCount         Int       @default(0) @map("inbound_count")
+  outboundCount        Int       @default(0) @map("outbound_count")
+  replyRate            Float     @default(0.0) @map("reply_rate")
+  avgThreadDepth       Float     @default(0.0) @map("avg_thread_depth")
+  replyRate30d         Float     @default(0.0) @map("reply_rate_30d")
+  replyRate90d         Float     @default(0.0) @map("reply_rate_90d")
+  replyRate180d        Float     @default(0.0) @map("reply_rate_180d")
+  avgResponseHours30d  Float?    @map("avg_response_hours_30d")
+  avgResponseHours90d  Float?    @map("avg_response_hours_90d")
+  avgResponseHours180d Float?    @map("avg_response_hours_180d")
+  messagesLast30d      Int       @default(0) @map("messages_last_30d")
+  messagesLast90d      Int       @default(0) @map("messages_last_90d")
+  messagesLast180d     Int       @default(0) @map("messages_last_180d")
+  conversationDays30d  Int       @default(0) @map("conversation_days_30d")
+  conversationDays90d  Int       @default(0) @map("conversation_days_90d")
+  conversationDays180d Int       @default(0) @map("conversation_days_180d")
+  lastInboundAt        DateTime? @map("last_inbound_at") @db.Timestamptz
+  lastOutboundAt       DateTime? @map("last_outbound_at") @db.Timestamptz
+
+  // Warmth
+  warmthScore         Float?      @default(0.0) @map("warmth_score")
+  warmthTier          WarmthTier  @default(frozen) @map("warmth_tier")
+  warmthScorePrevious Float?      @map("warmth_score_previous")
+  warmthTierOverride  WarmthTier? @map("warmth_tier_override")
+  warmthUpdatedAt     DateTime?   @map("warmth_updated_at") @db.Timestamptz
+
+  // Investor pipeline
+  pipelineStage     PipelineStage @default(none) @map("pipeline_stage")
+  pipelineUpdatedAt DateTime?     @map("pipeline_updated_at") @db.Timestamptz
+
+  notes           String? @db.Text
+  isArchived      Boolean @default(false) @map("is_archived")
+  inclusionStatus String  @default("active") @map("inclusion_status") @db.VarChar(32)
+  exclusionReason String? @map("exclusion_reason") @db.VarChar(64)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  user                User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  threads             EmailThread[]
+  drafts              Draft[]
+  warmthSnapshots     ContactWarmthSnapshot[]
+  briefing            ContactBriefing?
+  pipelineEvents      PipelineEvent[]
+  sequenceEnrollments SequenceEnrollment[]
+  sentimentSnapshots  SentimentSnapshot[]
+  sentimentAlerts     SentimentAlert[]
+  meetingBriefs       MeetingBrief[]
+  contactNotes        ContactNote[]
+
+  @@unique([userId, email], name: "uq_user_contact_email")
+  @@index([userId, lastContactedAt])
+  @@index([userId, warmthTier, lastContactedAt])
+  @@map("contacts")
+}
+
+model EmailThread {
+  id        String @id @default(uuid()) @db.Uuid
+  userId    String @map("user_id") @db.Uuid
+  contactId String @map("contact_id") @db.Uuid
+
+  gmailThreadId String    @map("gmail_thread_id") @db.VarChar(255)
+  subject       String?   @db.Text
+  messageCount  Int       @default(1) @map("message_count")
+  lastMessageAt DateTime? @map("last_message_at") @db.Timestamptz
+  snippet       String?   @db.Text
+  fullContent   String?   @map("full_content") @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, gmailThreadId], name: "uq_user_thread")
+  @@index([contactId, lastMessageAt(sort: Desc)])
+  @@map("email_threads")
+}
+
+model EmailMessage {
+  id String @id @default(uuid()) @db.Uuid
+
+  userId String @map("user_id") @db.Uuid
+
+  gmailMessageId String @map("gmail_message_id") @db.VarChar(255)
+  gmailThreadId  String @map("gmail_thread_id") @db.VarChar(255)
+
+  subject   String?          @db.Text
+  snippet   String?          @db.Text
+  bodyText  String?          @map("body_text") @db.Text
+  fromEmail String           @map("from_email") @db.VarChar(255)
+  direction MessageDirection
+  inReplyTo String?          @map("in_reply_to") @db.VarChar(255)
+  sentAt    DateTime?        @map("sent_at") @db.Timestamptz
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  user         User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  participants EmailMessageParticipant[]
+
+  @@unique([userId, gmailMessageId], name: "uq_user_message")
+  @@index([userId, sentAt])
+  @@index([userId, gmailThreadId])
+  @@map("email_messages")
+}
+
+model EmailMessageParticipant {
+  id String @id @default(uuid()) @db.Uuid
+
+  userId    String @map("user_id") @db.Uuid
+  messageId String @map("message_id") @db.Uuid
+
+  role  ParticipantRole
+  email String          @db.VarChar(255)
+  name  String?         @db.VarChar(255)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  user    User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  message EmailMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId, role])
+  @@index([userId, email])
+  @@map("email_message_participants")
+}
+
+model Draft {
+  id        String @id @default(uuid()) @db.Uuid
+  userId    String @map("user_id") @db.Uuid
+  contactId String @map("contact_id") @db.Uuid
+
+  threadContextIds String[] @map("thread_context_ids") @db.Uuid
+  promptVersion    String?  @map("prompt_version") @db.VarChar(50)
+  generatedText    String?  @map("generated_text") @db.Text
+  editedText       String?  @map("edited_text") @db.Text
+  finalSentText    String?  @map("final_sent_text") @db.Text
+
+  feedback       DraftFeedback? @map("feedback")
+  wasSent        Boolean        @default(false) @map("was_sent")
+  gmailMessageId String?        @map("gmail_message_id") @db.VarChar(255)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([userId, contactId, createdAt(sort: Desc)])
+  @@map("drafts")
+}
+
+model DigestLog {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  contactsSuggested String[] @map("contacts_suggested") @db.Uuid
+  emailSentAt       DateTime @map("email_sent_at") @db.Timestamptz
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, emailSentAt])
+  @@map("digest_logs")
+}
+
+model ContactWarmthSnapshot {
+  id String @id @default(uuid()) @db.Uuid
+
+  userId    String @map("user_id") @db.Uuid
+  contactId String @map("contact_id") @db.Uuid
+
+  recordedOn DateTime   @map("recorded_on") @db.Date
+  score      Float      @map("score")
+  tier       WarmthTier @map("tier")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@unique([contactId, recordedOn], name: "uq_contact_warmth_snapshot")
+  @@index([userId, recordedOn])
+  @@map("contact_warmth_snapshots")
+}
+
+model ContactBriefing {
+  id        String @id @default(uuid()) @db.Uuid
+  contactId String @unique @map("contact_id") @db.Uuid
+  userId    String @map("user_id") @db.Uuid
+
+  summary              String   @db.Text
+  keyFacts             String[] @map("key_facts")
+  openQuestions        String[] @map("open_questions")
+  commitments          Json     @default("[]") @db.JsonB
+  sentiment            String   @default("neutral") @db.VarChar(20)
+  lastMeetingMentioned String?  @map("last_meeting_mentioned") @db.Text
+
+  // Cache invalidation: hash of thread IDs + message counts
+  threadHashKey String   @map("thread_hash_key") @db.VarChar(64)
+  generatedAt   DateTime @map("generated_at") @db.Timestamptz
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("contact_briefings")
+}
+
+model PipelineEvent {
+  id        String @id @default(uuid()) @db.Uuid
+  userId    String @map("user_id") @db.Uuid
+  contactId String @map("contact_id") @db.Uuid
+
+  fromStage PipelineStage @map("from_stage")
+  toStage   PipelineStage @map("to_stage")
+  trigger   String        @db.VarChar(20) // "manual" | "auto" | "signal"
+  reason    String?       @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([contactId, createdAt(sort: Desc)])
+  @@map("pipeline_events")
+}
+
+model IntroPath {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  sourceContactId String @map("source_contact_id") @db.Uuid
+  targetContactId String @map("target_contact_id") @db.Uuid
+  strengthScore   Float  @map("strength_score")
+
+  sharedThreadCount Int    @default(0) @map("shared_thread_count")
+  reasoning         String @db.Text
+
+  computedAt DateTime @map("computed_at") @db.Timestamptz
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, sourceContactId, targetContactId], name: "uq_intro_path")
+  @@index([userId, strengthScore(sort: Desc)])
+  @@map("intro_paths")
+}
+
+// ─── INVESTOR DATABASE ──────────────────────────────────────────────────────
+
+model InvestorRecord {
+  id              String  @id @default(uuid()) @db.Uuid
+  name            String  @db.VarChar(255)
+  email           String? @db.VarChar(255)
+  fundName        String? @map("fund_name") @db.VarChar(255)
+  fundSizeUsd     BigInt? @map("fund_size_usd")
+  fundVintageYear Int?    @map("fund_vintage_year")
+
+  // Classification
+  investorType String?  @map("investor_type") @db.VarChar(50) // vc, angel, family_office, corporate, accelerator
+  stageFocus   String[] @map("stage_focus") // pre-seed, seed, series-a, series-b, etc.
+  sectorFocus  String[] @map("sector_focus")
+  geography    String[]
+
+  // Check size
+  typicalCheckMinUsd Int? @map("typical_check_min_usd")
+  typicalCheckMaxUsd Int? @map("typical_check_max_usd")
+
+  // Online presence
+  linkedinUrl   String? @map("linkedin_url") @db.Text
+  twitterHandle String? @map("twitter_handle") @db.VarChar(100)
+  website       String? @db.Text
+  photoUrl      String? @map("photo_url") @db.Text
+  facebookUrl   String? @map("facebook_url") @db.Text
+
+  // Partner contact (one partner per record from Ramp)
+  partnerName  String? @map("partner_name") @db.VarChar(255)
+  partnerEmail String? @map("partner_email") @db.VarChar(255)
+
+  // Thesis intelligence
+  thesisRaw     String? @map("thesis_raw") @db.Text
+  thesisSummary String? @map("thesis_summary") @db.Text
+
+  // Portfolio & activity
+  portfolioCompanies      Json?     @map("portfolio_companies") @db.JsonB   // string[]
+  recentInvestments       Json?     @map("recent_investments") @db.JsonB    // [{company, amount, date, sector, stage}]
+  investmentCount18mo     Int       @default(0) @map("investment_count_18mo")
+  numberOfExits           Int?      @map("number_of_exits")
+  lastKnownInvestmentDate DateTime? @map("last_known_investment_date") @db.Date
+  isActivelyDeploying     Boolean   @default(true) @map("is_actively_deploying")
+  foundingYear            Int?      @map("founding_year")
+
+  // Data provenance (vendor-agnostic)
+  dataSource     String  @default("manual") @map("data_source") @db.VarChar(50)   // ramp, crunchbase, manual
+  dataSourceId   String? @map("data_source_id") @db.VarChar(255)                  // vendor-specific dedup key
+  dataSourceTags Json    @default("[]") @map("data_source_tags") @db.JsonB         // ["ramp:angel_investors", "ramp:seed"]
+
+  // Legacy source tracking
+  crunchbaseId     String?   @map("crunchbase_id") @db.VarChar(100)
+  dataQualityScore Int       @default(0) @map("data_quality_score") // 0-100
+  lastEnrichedAt   DateTime? @map("last_enriched_at") @db.Timestamptz
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  discoveryScores DiscoveryScore[]
+
+  @@unique([dataSource, dataSourceId], name: "uq_data_source_id")
+  @@index([investorType])
+  @@index([isActivelyDeploying])
+  @@index([fundName])
+  @@map("investor_records")
+}
+
+model CompanyRecord {
+  id             String  @id @default(uuid()) @db.Uuid
+  name           String  @db.VarChar(255)
+  website        String? @db.Text
+  industry       String? @db.VarChar(255)
+  fundingStatus  String? @map("funding_status") @db.VarChar(50)  // Seed, Series A, etc.
+  oneLiner       String? @map("one_liner") @db.Text
+  description    String? @db.Text
+  yearFounded    Int?    @map("year_founded")
+  lastFunding    String? @map("last_funding") @db.VarChar(100)
+  totalFunding   String? @map("total_funding") @db.VarChar(100)
+  investors      Json?   @default("[]") @db.JsonB    // string[] — investor names
+  twitterUrl     String? @map("twitter_url") @db.Text
+  linkedinUrl    String? @map("linkedin_url") @db.Text
+  facebookUrl    String? @map("facebook_url") @db.Text
+  contactEmail   String? @map("contact_email") @db.VarChar(255)
+  hqLocation     String? @map("hq_location") @db.VarChar(500)
+
+  // Data provenance (same pattern as InvestorRecord)
+  dataSource     String  @default("manual") @map("data_source") @db.VarChar(50)
+  dataSourceId   String? @map("data_source_id") @db.VarChar(255)
+  dataSourceTags Json    @default("[]") @map("data_source_tags") @db.JsonB        // ["ramp:series_a", "ramp:seed"]
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@unique([dataSource, dataSourceId], name: "uq_company_data_source_id")
+  @@index([industry])
+  @@index([fundingStatus])
+  @@map("company_records")
+}
+
+// ─── DISCOVERY ENGINE ───────────────────────────────────────────────────────
+
+model StartupProfile {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @unique @map("user_id") @db.Uuid
+
+  name           String? @db.VarChar(255)
+  stage          String? @db.VarChar(50) // pre-seed, seed, series-a, series-b
+  sector         String? @db.VarChar(100)
+  subSector      String? @map("sub_sector") @db.VarChar(100)
+  arrUsd         Int?    @map("arr_usd")
+  geography      String? @db.VarChar(100)
+  raiseTargetUsd Int?    @map("raise_target_usd")
+  description    String? @db.Text // used by Claude for thesis alignment
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("startup_profiles")
+}
+
+model DiscoveryScore {
+  id               String @id @default(uuid()) @db.Uuid
+  userId           String @map("user_id") @db.Uuid
+  investorRecordId String @map("investor_record_id") @db.Uuid
+
+  portfolioFitScore    Int?    @map("portfolio_fit_score") // 0-100
+  thesisAlignmentScore Int?    @map("thesis_alignment_score") // 0-100
+  fundDeploymentStatus String? @map("fund_deployment_status") @db.VarChar(20) // active, harvesting, unknown
+  warmPathScore        Int?    @map("warm_path_score") // 0-100
+  warmPathSummary      String? @map("warm_path_summary") @db.Text
+  compositeScore       Int     @default(0) @map("composite_score") // weighted average
+
+  thesisAlignmentReason String? @map("thesis_alignment_reason") @db.Text
+
+  lastScoredAt DateTime @default(now()) @map("last_scored_at") @db.Timestamptz
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  investorRecord InvestorRecord @relation(fields: [investorRecordId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, investorRecordId], name: "uq_user_investor_score")
+  @@index([userId, compositeScore(sort: Desc)])
+  @@map("discovery_scores")
+}
+
+// ─── SEQUENCE ENGINE ────────────────────────────────────────────────────────
+
+model Sequence {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  name   String @db.VarChar(255)
+  status String @default("draft") @db.VarChar(20) // draft, active, paused, completed
+  // steps: [{step, dayOffset, emailType, subjectHint}]
+  steps  Json   @default("[]") @db.JsonB
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  user        User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  enrollments SequenceEnrollment[]
+
+  @@index([userId, status])
+  @@map("sequences")
+}
+
+model SequenceEnrollment {
+  id         String @id @default(uuid()) @db.Uuid
+  sequenceId String @map("sequence_id") @db.Uuid
+  contactId  String @map("contact_id") @db.Uuid
+  userId     String @map("user_id") @db.Uuid
+
+  status      String    @default("draft") @db.VarChar(20) // draft, approved, active, replied, completed, skipped
+  currentStep Int       @default(0) @map("current_step")
+  enrolledAt  DateTime  @default(now()) @map("enrolled_at") @db.Timestamptz
+  nextSendAt  DateTime? @map("next_send_at") @db.Timestamptz
+  repliedAt   DateTime? @map("replied_at") @db.Timestamptz
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  sequence Sequence        @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  contact  Contact         @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  user     User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emails   SequenceEmail[]
+
+  @@unique([sequenceId, contactId], name: "uq_sequence_contact")
+  @@index([status, nextSendAt])
+  @@map("sequence_enrollments")
+}
+
+model SequenceEmail {
+  id           String @id @default(uuid()) @db.Uuid
+  enrollmentId String @map("enrollment_id") @db.Uuid
+
+  stepNumber Int     @map("step_number")
+  subject    String? @db.Text
+  body       String? @db.Text
+  status     String  @default("draft") @db.VarChar(20) // draft, approved, sent, opened, replied
+
+  generatedAt    DateTime  @default(now()) @map("generated_at") @db.Timestamptz
+  approvedAt     DateTime? @map("approved_at") @db.Timestamptz
+  sentAt         DateTime? @map("sent_at") @db.Timestamptz
+  openedAt       DateTime? @map("opened_at") @db.Timestamptz
+  gmailMessageId String?   @map("gmail_message_id") @db.VarChar(255)
+
+  enrollment SequenceEnrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+
+  @@unique([enrollmentId, stepNumber], name: "uq_enrollment_step")
+  @@map("sequence_emails")
+}
+
+// ─── ROUND FORECASTING ──────────────────────────────────────────────────────
+
+model ForecastSnapshot {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  snapshotDate          DateTime  @default(now()) @map("snapshot_date") @db.Date
+  targetRaiseUsd        Int?      @map("target_raise_usd")
+  committedUsd          Int       @default(0) @map("committed_usd")
+  pipelineValueUsd      Int       @default(0) @map("pipeline_value_usd") // weighted by stage conversion
+  closeProbability      Float     @default(0) @map("close_probability") // 0-1
+  projectedCloseDate    DateTime? @map("projected_close_date") @db.Date
+  meetingsNeededPerWeek Float     @default(0) @map("meetings_needed_per_week")
+  currentVelocity       Float     @default(0) @map("current_velocity") // meetings/week last 4 weeks
+  onTrack               Boolean   @default(false) @map("on_track")
+  stageConversionRates  Json      @default("{}") @map("stage_conversion_rates") @db.JsonB
+  avgDaysPerStage       Json      @default("{}") @map("avg_days_per_stage") @db.JsonB
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, snapshotDate(sort: Desc)])
+  @@map("forecast_snapshots")
+}
+
+// ─── SENTIMENT MONITORING ───────────────────────────────────────────────────
+
+model SentimentSnapshot {
+  id        String @id @default(uuid()) @db.Uuid
+  userId    String @map("user_id") @db.Uuid
+  contactId String @map("contact_id") @db.Uuid
+
+  snapshotAt               DateTime @default(now()) @map("snapshot_at") @db.Timestamptz
+  avgReplyLatencyHours     Float?   @map("avg_reply_latency_hours")
+  avgReplyLengthWords      Float?   @map("avg_reply_length_words")
+  forwardLookingScore      Float?   @map("forward_looking_score") // 0-1
+  questionSpecificityScore Float?   @map("question_specificity_score") // 0-1
+  proactiveReachOutCount   Int      @default(0) @map("proactive_reach_out_count")
+  degradingSignals         String[] @map("degrading_signals")
+  alertTriggered           Boolean  @default(false) @map("alert_triggered")
+  llmRawAnalysis           String?  @map("llm_raw_analysis") @db.Text
+  recommendedAction        String?  @map("recommended_action") @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  user    User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contact Contact          @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  alerts  SentimentAlert[]
+
+  @@index([userId, contactId, snapshotAt(sort: Desc)])
+  @@map("sentiment_snapshots")
+}
+
+model SentimentAlert {
+  id         String @id @default(uuid()) @db.Uuid
+  userId     String @map("user_id") @db.Uuid
+  contactId  String @map("contact_id") @db.Uuid
+  snapshotId String @map("snapshot_id") @db.Uuid
+
+  alertType         String    @map("alert_type") @db.VarChar(50) // degradation, ghost_risk, topic_silence
+  summary           String    @db.Text
+  recommendedAction String?   @map("recommended_action") @db.Text
+  dismissedAt       DateTime? @map("dismissed_at") @db.Timestamptz
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  user     User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contact  Contact           @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  snapshot SentimentSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+
+  @@index([userId, dismissedAt])
+  @@index([contactId, createdAt(sort: Desc)])
+  @@map("sentiment_alerts")
+}
+
+// ─── PRE-MEETING BRIEF ──────────────────────────────────────────────────────
+
+model MeetingBrief {
+  id        String @id @default(uuid()) @db.Uuid
+  userId    String @map("user_id") @db.Uuid
+  contactId String @map("contact_id") @db.Uuid
+
+  calendarEventId  String    @map("calendar_event_id") @db.VarChar(255)
+  meetingAt        DateTime  @map("meeting_at") @db.Timestamptz
+  briefMarkdown    String?   @map("brief_markdown") @db.Text
+  generatedAt      DateTime  @default(now()) @map("generated_at") @db.Timestamptz
+  deliveredEmailAt DateTime? @map("delivered_email_at") @db.Timestamptz
+  viewedAt         DateTime? @map("viewed_at") @db.Timestamptz
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, calendarEventId], name: "uq_user_calendar_event")
+  @@index([userId, meetingAt])
+  @@map("meeting_briefs")
+}
+
+// ─── RAISE DIAGNOSTICS ──────────────────────────────────────────────────────
+
+model DiagnosticsReport {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  reportDate            DateTime @default(now()) @map("report_date") @db.Date
+  dropoutByStage        Json     @default("{}") @map("dropout_by_stage") @db.JsonB
+  topDropoutTopics      Json     @default("[]") @map("top_dropout_topics") @db.JsonB
+  highPerformingPhrases Json     @default("[]") @map("high_performing_phrases") @db.JsonB
+  lowPerformingPhrases  Json     @default("[]") @map("low_performing_phrases") @db.JsonB
+  velocityTrend         String   @default("stable") @map("velocity_trend") @db.VarChar(20) // accelerating, stable, decelerating
+  narrativeSummary      String?  @map("narrative_summary") @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, reportDate(sort: Desc)])
+  @@map("diagnostics_reports")
+}
+
+// ─── SHARED WORKSPACE ───────────────────────────────────────────────────────
+
+model Organization {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String   @db.VarChar(255)
+  slug      String   @unique @db.VarChar(100)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  members OrgMember[]
+  notes   ContactNote[]
+  feed    ActivityFeed[]
+  decks   PitchDeck[]
+
+  @@map("organizations")
+}
+
+model OrgMember {
+  id     String @id @default(uuid()) @db.Uuid
+  orgId  String @map("org_id") @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  role      String   @default("contributor") @db.VarChar(20) // owner, contributor, viewer
+  invitedBy String?  @map("invited_by") @db.Uuid
+  joinedAt  DateTime @default(now()) @map("joined_at") @db.Timestamptz
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, userId], name: "uq_org_member")
+  @@map("org_members")
+}
+
+model ContactNote {
+  id        String @id @default(uuid()) @db.Uuid
+  contactId String @map("contact_id") @db.Uuid
+  orgId     String @map("org_id") @db.Uuid
+  authorId  String @map("author_id") @db.Uuid
+
+  body      String   @db.Text
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  contact Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([contactId, createdAt(sort: Desc)])
+  @@map("contact_notes")
+}
+
+model ActivityFeed {
+  id        String  @id @default(uuid()) @db.Uuid
+  orgId     String  @map("org_id") @db.Uuid
+  userId    String  @map("user_id") @db.Uuid
+  contactId String? @map("contact_id") @db.Uuid
+
+  activityType String   @map("activity_type") @db.VarChar(50) // email_sent, stage_changed, note_added, brief_viewed
+  metadata     Json     @default("{}") @db.JsonB
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, createdAt(sort: Desc)])
+  @@index([orgId, contactId])
+  @@map("activity_feed")
+}
+
+// ─── PITCH DECK HOSTING ─────────────────────────────────────────────────────
+
+model PitchDeck {
+  id     String  @id @default(uuid()) @db.Uuid
+  userId String  @map("user_id") @db.Uuid
+  orgId  String? @map("org_id") @db.Uuid
+
+  filename   String  @db.VarChar(255)
+  storageUrl String  @map("storage_url") @db.Text
+  pageCount  Int     @default(0) @map("page_count")
+  isActive   Boolean @default(true) @map("is_active")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  user   User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  org    Organization? @relation(fields: [orgId], references: [id])
+  shares DeckShare[]
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("pitch_decks")
+}
+
+model DeckShare {
+  id        String  @id @default(uuid()) @db.Uuid
+  deckId    String  @map("deck_id") @db.Uuid
+  contactId String? @map("contact_id") @db.Uuid
+
+  shareToken String    @unique @default(uuid()) @map("share_token") @db.VarChar(255)
+  expiresAt  DateTime? @map("expires_at") @db.Timestamptz
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  deck  PitchDeck  @relation(fields: [deckId], references: [id], onDelete: Cascade)
+  views DeckView[]
+
+  @@index([deckId])
+  @@map("deck_shares")
+}
+
+model DeckView {
+  id      String @id @default(uuid()) @db.Uuid
+  shareId String @map("share_id") @db.Uuid
+
+  startedAt   DateTime  @default(now()) @map("started_at") @db.Timestamptz
+  completedAt DateTime? @map("completed_at") @db.Timestamptz
+  pagesViewed Int[]     @map("pages_viewed")
+  timePerPage Json      @default("{}") @map("time_per_page") @db.JsonB // {pageNum: secondsSpent}
+  viewerIp    String?   @map("viewer_ip") @db.VarChar(50)
+
+  share DeckShare @relation(fields: [shareId], references: [id], onDelete: Cascade)
+
+  @@index([shareId, startedAt(sort: Desc)])
+  @@map("deck_views")
+}
+
+// ─── FEATURE INTELLIGENCE ENGINE ─────────────────────────────────────────────
+
+model FounderProfile {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @unique @map("user_id") @db.Uuid
+
+  appName            String  @map("app_name") @db.VarChar(255)
+  appDescription     String  @map("app_description") @db.Text
+  targetMarket       String  @map("target_market") @db.VarChar(255)
+  currentMRR         Int     @default(0) @map("current_mrr") // USD
+  stage              String  @db.VarChar(20) // pre-seed | seed | series-a | series-b
+  fundingGoal        Int     @default(0) @map("funding_goal") // USD
+  crunchbaseProfileUrl String? @map("crunchbase_profile_url") @db.VarChar(500)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  featureAnalyses FeatureAnalysis[]
+
+  @@map("founder_profiles")
+}
+
+model FeatureAnalysis {
+  id         String @id @default(uuid()) @db.Uuid
+  userId     String @map("user_id") @db.Uuid
+  founderId  String @map("founder_id") @db.Uuid
+
+  featureName        String  @map("feature_name") @db.VarChar(255)
+  featureDescription String  @map("feature_description") @db.Text
+  estimatedBuildDays Int?    @map("estimated_build_days")
+  featureCategory    String  @map("feature_category") @db.VarChar(50) // retention|acquisition|revenue|moat|dx
+
+  status             String  @default("pending") @db.VarChar(20) // pending|running|complete|failed
+  errorMessage       String? @map("error_message") @db.Text
+
+  verdict            String? @db.VarChar(30) // build|defer|kill|needs-validation
+  verdictReasoning   String? @map("verdict_reasoning") @db.Text
+  revenueImpactLow   Int     @default(0) @map("revenue_impact_low")
+  revenueImpactHigh  Int     @default(0) @map("revenue_impact_high")
+  investorAlignmentScore Int @default(0) @map("investor_alignment_score") // 0-100
+
+  marketPrecedents   Json    @default("[]") @map("market_precedents") @db.JsonB
+  alignedInvestors   Json    @default("[]") @map("aligned_investors") @db.JsonB
+  recommendations    Json    @default("[]") @db.JsonB
+
+  rawMarketResearch  String? @map("raw_market_research") @db.Text
+  modelVersion       String  @default("claude-sonnet-4-20250514") @map("model_version") @db.VarChar(100)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  founderProfile FounderProfile @relation(fields: [founderId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("feature_analyses")
+}
